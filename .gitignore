@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor / IDE (VS Code)
+.vscode/
+
+# Configuración con credenciales locales (por si separas datos sensibles más adelante)
+config/database.local.php
+
+# Archivos de respaldo o temporales
+*.log
+*.tmp
