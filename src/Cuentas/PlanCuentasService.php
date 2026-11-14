@@ -8,8 +8,8 @@ require_once __DIR__ . '/../Auditoria/AuditoriaService.php';
  * Servicio de Gestión del Plan de Cuentas Contables (Multi-tenancy).
  *
  * Administra la estructura jerárquica del plan de cuentas por empresa,
- * distinguiendo cuentas agrupadoras de cuentas imputables (las únicas
- * habilitadas para recibir cargos/abonos en AsientoService).
+ * calculando automáticamente la naturaleza contable (DEUDORA / ACREEDORA)
+ * y el nivel jerárquico (1 a 4), además de soportar homologación SII (F22).
  */
 class PlanCuentasService
 {
@@ -19,6 +19,7 @@ class PlanCuentasService
         'PATRIMONIO',
         'INGRESO',
         'GASTO',
+        'COSTO',
     ];
 
     private PDO $pdo;
@@ -31,10 +32,11 @@ class PlanCuentasService
     }
 
     /**
-     * Crea una nueva cuenta contable dentro del plan de cuentas de una empresa.
+     * Crea una nueva cuenta contable dentro del plan de cuentas de una empresa,
+     * deduciendo automáticamente su naturaleza contable y nivel jerárquico.
      *
      * @param int   $empresaId ID de la empresa (Multi-tenancy)
-     * @param array $datos     ['codigo' => string, 'nombre' => string, 'tipo' => string, 'es_imputable' => bool, 'cuenta_padre_id' => ?int]
+     * @param array $datos     ['codigo', 'nombre', 'tipo', 'es_imputable', 'cuenta_padre_id', 'codigo_sii']
      * @param int   $usuarioId ID del usuario que ejecuta la operación
      * @return int ID de la cuenta creada
      * @throws InvalidArgumentException|RuntimeException
@@ -56,9 +58,16 @@ class PlanCuentasService
             throw new InvalidArgumentException("Tipo de cuenta contable inválido: '{$tipo}'.");
         }
 
+        $naturaleza = $this->deducirNaturaleza($tipo);
+        $nivel      = $this->calcularNivelJerarquico($codigo);
+
         $esImputable   = !empty($datos['es_imputable']) ? 1 : 0;
         $cuentaPadreId = isset($datos['cuenta_padre_id']) && is_numeric($datos['cuenta_padre_id']) && (int)$datos['cuenta_padre_id'] > 0
             ? (int)$datos['cuenta_padre_id']
+            : null;
+
+        $codigoSii = isset($datos['codigo_sii']) && trim((string)$datos['codigo_sii']) !== ''
+            ? mb_substr(trim((string)$datos['codigo_sii']), 0, 20)
             : null;
 
         $transaccionPropia = !$this->pdo->inTransaction();
@@ -95,21 +104,24 @@ class PlanCuentasService
                         "La cuenta [{$padre['codigo']} - {$padre['nombre']}] es imputable y no puede tener subcuentas hijas."
                     );
                 }
-                if ($padre['tipo'] !== $tipo) {
+                if ($padre['naturaleza'] !== $naturaleza) {
                     throw new InvalidArgumentException(
-                        "Inconsistencia de naturaleza: la cuenta hija ({$tipo}) debe coincidir con el tipo de su cuenta padre ({$padre['tipo']})."
+                        "Inconsistencia contable: la naturaleza de la subcuenta ({$naturaleza}) no coincide con su cuenta padre ({$padre['naturaleza']})."
                     );
                 }
             }
 
-            // 3. Insertar cuenta contable
+            // 3. Insertar cuenta contable con todas las columnas de `plan_cuentas`
             $sql = "INSERT INTO plan_cuentas (
                         empresa_id,
                         cuenta_padre_id,
                         codigo,
                         nombre,
                         tipo,
+                        naturaleza,
+                        nivel,
                         es_imputable,
+                        codigo_sii,
                         activa
                     ) VALUES (
                         :empresa_id,
@@ -117,7 +129,10 @@ class PlanCuentasService
                         :codigo,
                         :nombre,
                         :tipo,
+                        :naturaleza,
+                        :nivel,
                         :es_imputable,
+                        :codigo_sii,
                         1
                     )";
 
@@ -128,7 +143,10 @@ class PlanCuentasService
                 ':codigo'          => $codigo,
                 ':nombre'          => $nombre,
                 ':tipo'            => $tipo,
+                ':naturaleza'      => $naturaleza,
+                ':nivel'           => $nivel,
                 ':es_imputable'    => $esImputable,
+                ':codigo_sii'      => $codigoSii,
             ]);
 
             $cuentaId = (int)$this->pdo->lastInsertId();
@@ -143,7 +161,10 @@ class PlanCuentasService
                     'codigo'          => $codigo,
                     'nombre'          => $nombre,
                     'tipo'            => $tipo,
+                    'naturaleza'      => $naturaleza,
+                    'nivel'           => $nivel,
                     'es_imputable'    => (bool)$esImputable,
+                    'codigo_sii'      => $codigoSii,
                     'cuenta_padre_id' => $cuentaPadreId,
                     'usuario_id'      => $usuarioId,
                 ]
@@ -166,13 +187,11 @@ class PlanCuentasService
     }
 
     /**
-     * Actualiza el nombre o condición de imputabilidad de una cuenta contable.
-     * Protege la integridad histórica impidiendo cambiar el tipo o volver agrupadora
-     * una cuenta que ya posee apuntes en `detalle_asientos`.
+     * Actualiza el nombre, homologación SII o condición de imputabilidad de una cuenta contable.
      *
      * @param int   $empresaId ID de la empresa
      * @param int   $cuentaId  ID de la cuenta contable
-     * @param array $datos     ['nombre' => string, 'es_imputable' => bool]
+     * @param array $datos     ['nombre', 'es_imputable', 'codigo_sii']
      * @param int   $usuarioId ID del usuario que ejecuta la modificación
      * @return void
      * @throws InvalidArgumentException|RuntimeException
@@ -192,6 +211,10 @@ class PlanCuentasService
         $nuevoImputable = isset($datos['es_imputable'])
             ? (!empty($datos['es_imputable']) ? 1 : 0)
             : (int)$actual['es_imputable'];
+
+        $codigoSii = array_key_exists('codigo_sii', $datos)
+            ? (trim((string)$datos['codigo_sii']) !== '' ? mb_substr(trim((string)$datos['codigo_sii']), 0, 20) : null)
+            : $actual['codigo_sii'];
 
         if ((int)$actual['es_imputable'] === 1 && $nuevoImputable === 0 && $this->tieneMovimientosContables($cuentaId)) {
             throw new RuntimeException(
@@ -215,12 +238,14 @@ class PlanCuentasService
                 UPDATE plan_cuentas
                 SET nombre = :nombre,
                     es_imputable = :es_imputable,
+                    codigo_sii = :codigo_sii,
                     actualizado_en = NOW()
                 WHERE id = :id AND empresa_id = :empresa_id
             ");
             $stmt->execute([
                 ':nombre'       => $nombre,
                 ':es_imputable' => $nuevoImputable,
+                ':codigo_sii'   => $codigoSii,
                 ':id'           => $cuentaId,
                 ':empresa_id'   => $empresaId,
             ]);
@@ -236,6 +261,7 @@ class PlanCuentasService
                     'nombre_nuevo'          => $nombre,
                     'es_imputable_anterior' => (bool)$actual['es_imputable'],
                     'es_imputable_nuevo'    => (bool)$nuevoImputable,
+                    'codigo_sii'            => $codigoSii,
                     'usuario_id'            => $usuarioId,
                 ]
             );
@@ -327,7 +353,8 @@ class PlanCuentasService
     public function obtenerCuentaPorId(int $empresaId, int $cuentaId): ?array
     {
         $stmt = $this->pdo->prepare("
-            SELECT id, empresa_id, cuenta_padre_id, codigo, nombre, tipo, es_imputable, activa, creado_en, actualizado_en
+            SELECT id, empresa_id, cuenta_padre_id, codigo, nombre, tipo, naturaleza,
+                    nivel, es_imputable, codigo_sii, activa, creado_en, actualizado_en
             FROM plan_cuentas
             WHERE id = :id AND empresa_id = :empresa_id
             LIMIT 1
@@ -351,7 +378,8 @@ class PlanCuentasService
     public function obtenerCuentaPorCodigo(int $empresaId, string $codigo): ?array
     {
         $stmt = $this->pdo->prepare("
-            SELECT id, empresa_id, cuenta_padre_id, codigo, nombre, tipo, es_imputable, activa
+            SELECT id, empresa_id, cuenta_padre_id, codigo, nombre, tipo, naturaleza,
+                    nivel, es_imputable, codigo_sii, activa
             FROM plan_cuentas
             WHERE empresa_id = :empresa_id AND codigo = :codigo
             LIMIT 1
@@ -368,7 +396,7 @@ class PlanCuentasService
     /**
      * Lista el plan de cuentas completo de una empresa ordenado jerárquicamente por código.
      *
-     * @param int  $empresaId     ID de la empresa
+     * @param int  $empresaId      ID de la empresa
      * @param bool $soloImputables Si es true, retorna únicamente cuentas habilitadas para asientos
      * @param bool $soloActivas    Si es true, omite cuentas desactivadas
      * @return array<int, array<string, mixed>>
@@ -396,10 +424,13 @@ class PlanCuentasService
                         pc.codigo,
                         pc.nombre,
                         pc.tipo,
+                        pc.naturaleza,
+                        pc.nivel,
                         pc.es_imputable,
+                        pc.codigo_sii,
                         pc.activa
-                FROM plan_cuentas pc
-                LEFT JOIN plan_cuentas padre
+                    FROM plan_cuentas pc
+                    LEFT JOIN plan_cuentas padre
                         ON padre.id = pc.cuenta_padre_id
                         AND padre.empresa_id = pc.empresa_id
                 WHERE {$whereSql}
@@ -412,11 +443,32 @@ class PlanCuentasService
     }
 
     /**
-     * Verifica si una cuenta ya posee líneas registradas en detalle_asientos.
+     * Deduce la naturaleza contable estándar según el tipo de cuenta.
      *
-     * @param int $cuentaId
-     * @return bool
+     * @param string $tipo
+     * @return string 'DEUDORA' | 'ACREEDORA'
      */
+    private function deducirNaturaleza(string $tipo): string
+    {
+        return match ($tipo) {
+            'ACTIVO', 'GASTO', 'COSTO'       => 'DEUDORA',
+            'PASIVO', 'PATRIMONIO', 'INGRESO' => 'ACREEDORA',
+            default                          => throw new InvalidArgumentException("Tipo de cuenta sin naturaleza definida: '{$tipo}'."),
+        };
+    }
+
+    /**
+     * Calcula el nivel jerárquico (1 a 4) a partir de los segmentos del código (ej. '1.1.01.001' => 4).
+     *
+     * @param string $codigo
+     * @return int
+     */
+    private function calcularNivelJerarquico(string $codigo): int
+    {
+        $segmentos = explode('.', $codigo);
+        return max(1, min(4, count($segmentos)));
+    }
+
     private function tieneMovimientosContables(int $cuentaId): bool
     {
         $stmt = $this->pdo->prepare("SELECT 1 FROM detalle_asientos WHERE cuenta_id = :cuenta_id LIMIT 1");
@@ -424,13 +476,6 @@ class PlanCuentasService
         return $stmt->fetchColumn() !== false;
     }
 
-    /**
-     * Verifica si existen subcuentas que referencien a esta cuenta como padre.
-     *
-     * @param int $empresaId
-     * @param int $cuentaId
-     * @return bool
-     */
     private function tieneSubcuentasHijas(int $empresaId, int $cuentaId): bool
     {
         $stmt = $this->pdo->prepare("
@@ -445,13 +490,6 @@ class PlanCuentasService
         return $stmt->fetchColumn() !== false;
     }
 
-    /**
-     * Sanitiza y valida el formato del código contable (ej. '1.1.01.001' o '110101').
-     *
-     * @param string $codigoRaw
-     * @return string
-     * @throws InvalidArgumentException
-     */
     private function normalizarCodigo(string $codigoRaw): string
     {
         $codigo = trim($codigoRaw);
