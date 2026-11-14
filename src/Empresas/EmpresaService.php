@@ -9,10 +9,18 @@ require_once __DIR__ . '/../Auditoria/AuditoriaService.php';
  *
  * Administra las empresas clientes operadas por el Contador titular,
  * aplicando el límite de cupo contratado en la licencia (Plan Base: 5 empresas),
- * validación tributaria de RUT chileno (Módulo 11 con ctype_digit) y auditoría.
+ * validación de RUT chileno (Módulo 11 con ctype_digit), regímenes tributarios
+ * SII y tasa PPM con precisión BCMath.
  */
 class EmpresaService
 {
+    private const REGIMENES_VALIDOS = [
+        'PRO_PYME_GENERAL',
+        'PRO_PYME_TRANSPARENTE',
+        'GENERAL_14A',
+        'RENTA_PRESUNTA',
+    ];
+
     private PDO $pdo;
     private AuditoriaService $auditoriaService;
     private int $maxEmpresasPermitidas;
@@ -27,13 +35,12 @@ class EmpresaService
 
     /**
      * Registra una nueva empresa en la cartera del Contador validando el cupo
-     * máximo de su licencia contratada, RUT Módulo 11 y unicidad tributaria.
+     * máximo de su licencia, RUT Módulo 11 y parámetros tributarios de `empresas`.
      *
-     * @param array $datos     ['rut' => string, 'razon_social' => string, 'giro' => string, 'direccion' => ?string, 'comuna' => ?string, 'regimen_tributario' => ?string]
+     * @param array $datos     ['rut', 'razon_social', 'nombre_fantasia', 'giro', 'direccion', 'comuna', 'regimen_tributario', 'tasa_ppm']
      * @param int   $usuarioId ID del Contador que ejecuta la creación
      * @return int ID de la empresa creada
-     * @throws InvalidArgumentException Si los datos o el RUT son inválidos.
-     * @throws RuntimeException Si se alcanzó el límite de empresas del plan o el RUT ya existe.
+     * @throws InvalidArgumentException|RuntimeException
      */
     public function crearEmpresa(array $datos, int $usuarioId): int
     {
@@ -44,9 +51,13 @@ class EmpresaService
             throw new InvalidArgumentException('La razón social es obligatoria y no puede superar los 200 caracteres.');
         }
 
+        $nombreFantasia = isset($datos['nombre_fantasia']) && trim((string)$datos['nombre_fantasia']) !== ''
+            ? mb_substr(trim((string)$datos['nombre_fantasia']), 0, 150)
+            : null;
+
         $giro = trim((string)($datos['giro'] ?? ''));
-        if ($giro === '' || mb_strlen($giro) > 200) {
-            throw new InvalidArgumentException('El giro comercial es obligatorio y no puede superar los 200 caracteres.');
+        if ($giro === '' || mb_strlen($giro) > 255) {
+            throw new InvalidArgumentException('El giro comercial es obligatorio y no puede superar los 255 caracteres.');
         }
 
         $direccion = isset($datos['direccion']) && trim((string)$datos['direccion']) !== ''
@@ -57,9 +68,12 @@ class EmpresaService
             ? mb_substr(trim((string)$datos['comuna']), 0, 100)
             : null;
 
-        $regimen = isset($datos['regimen_tributario']) && trim((string)$datos['regimen_tributario']) !== ''
-            ? mb_substr(trim((string)$datos['regimen_tributario']), 0, 80)
-            : '14 D N°3 PRO PYME GENERAL';
+        $regimen = strtoupper(trim((string)($datos['regimen_tributario'] ?? 'PRO_PYME_GENERAL')));
+        if (!in_array($regimen, self::REGIMENES_VALIDOS, true)) {
+            throw new InvalidArgumentException("Régimen tributario inválido: '{$regimen}'.");
+        }
+
+        $tasaPpm = $this->validarTasaPpm((string)($datos['tasa_ppm'] ?? '0.0025'));
 
         $transaccionPropia = !$this->pdo->inTransaction();
         if ($transaccionPropia) {
@@ -73,7 +87,7 @@ class EmpresaService
 
             if ($totalRegistradas >= $this->maxEmpresasPermitidas) {
                 throw new RuntimeException(
-                    "Límite de plan alcanzado: Su licencia permite gestionar un máximo de {$this->maxEmpresasPermitidas} empresas. Contacte a soporte para ampliar su plan."
+                    "Límite de plan alcanzado: Su licencia permite gestionar un máximo de {$this->maxEmpresasPermitidas} empresas."
                 );
             }
 
@@ -84,22 +98,26 @@ class EmpresaService
                 throw new RuntimeException("Ya existe una empresa registrada con el RUT {$rutNormalizado}.");
             }
 
-            // 3. Insertar empresa en la cartera
+            // 3. Insertar empresa alineada con todas las columnas de `empresas`
             $sqlInsert = "INSERT INTO empresas (
                                 rut,
                                 razon_social,
+                                nombre_fantasia,
                                 giro,
                                 direccion,
                                 comuna,
                                 regimen_tributario,
+                                tasa_ppm,
                                 activa
                             ) VALUES (
                                 :rut,
                                 :razon_social,
+                                :nombre_fantasia,
                                 :giro,
                                 :direccion,
                                 :comuna,
                                 :regimen_tributario,
+                                :tasa_ppm,
                                 1
                             )";
 
@@ -107,10 +125,12 @@ class EmpresaService
             $stmtInsert->execute([
                 ':rut'                => $rutNormalizado,
                 ':razon_social'       => $razonSocial,
+                ':nombre_fantasia'    => $nombreFantasia,
                 ':giro'               => $giro,
                 ':direccion'          => $direccion,
                 ':comuna'             => $comuna,
                 ':regimen_tributario' => $regimen,
+                ':tasa_ppm'           => $tasaPpm,
             ]);
 
             $empresaId = (int)$this->pdo->lastInsertId();
@@ -125,6 +145,7 @@ class EmpresaService
                     'rut'                => $rutNormalizado,
                     'razon_social'       => $razonSocial,
                     'regimen_tributario' => $regimen,
+                    'tasa_ppm'           => $tasaPpm,
                     'cupo_usado'         => ($totalRegistradas + 1) . '/' . $this->maxEmpresasPermitidas,
                     'usuario_id'         => $usuarioId,
                 ]
@@ -166,10 +187,10 @@ class EmpresaService
     }
 
     /**
-     * Actualiza los datos administrativos permitidos de una empresa (nunca el RUT).
+     * Actualiza los datos administrativos y tributarios de una empresa (nunca el RUT).
      *
      * @param int   $empresaId ID de la empresa
-     * @param array $datos     ['razon_social', 'giro', 'direccion', 'comuna', 'regimen_tributario']
+     * @param array $datos     ['razon_social', 'nombre_fantasia', 'giro', 'direccion', 'comuna', 'regimen_tributario', 'tasa_ppm']
      * @param int   $usuarioId ID del usuario que modifica
      * @return void
      * @throws InvalidArgumentException|RuntimeException
@@ -188,17 +209,29 @@ class EmpresaService
             throw new InvalidArgumentException('La razón social y el giro comercial son obligatorios.');
         }
 
-        $direccion = isset($datos['direccion']) && trim((string)$datos['direccion']) !== ''
-            ? mb_substr(trim((string)$datos['direccion']), 0, 255)
-            : null;
+        $nombreFantasia = array_key_exists('nombre_fantasia', $datos)
+            ? (trim((string)$datos['nombre_fantasia']) !== '' ? mb_substr(trim((string)$datos['nombre_fantasia']), 0, 150) : null)
+            : $empresaActual['nombre_fantasia'];
 
-        $comuna = isset($datos['comuna']) && trim((string)$datos['comuna']) !== ''
-            ? mb_substr(trim((string)$datos['comuna']), 0, 100)
-            : null;
+        $direccion = array_key_exists('direccion', $datos)
+            ? (trim((string)$datos['direccion']) !== '' ? mb_substr(trim((string)$datos['direccion']), 0, 255) : null)
+            : $empresaActual['direccion'];
 
-        $regimen = isset($datos['regimen_tributario']) && trim((string)$datos['regimen_tributario']) !== ''
-            ? mb_substr(trim((string)$datos['regimen_tributario']), 0, 80)
+        $comuna = array_key_exists('comuna', $datos)
+            ? (trim((string)$datos['comuna']) !== '' ? mb_substr(trim((string)$datos['comuna']), 0, 100) : null)
+            : $empresaActual['comuna'];
+
+        $regimen = isset($datos['regimen_tributario'])
+            ? strtoupper(trim((string)$datos['regimen_tributario']))
             : (string)$empresaActual['regimen_tributario'];
+
+        if (!in_array($regimen, self::REGIMENES_VALIDOS, true)) {
+            throw new InvalidArgumentException("Régimen tributario inválido: '{$regimen}'.");
+        }
+
+        $tasaPpm = isset($datos['tasa_ppm'])
+            ? $this->validarTasaPpm((string)$datos['tasa_ppm'])
+            : (string)$empresaActual['tasa_ppm'];
 
         $transaccionPropia = !$this->pdo->inTransaction();
         if ($transaccionPropia) {
@@ -208,20 +241,24 @@ class EmpresaService
         try {
             $sql = "UPDATE empresas
                     SET razon_social = :razon_social,
+                        nombre_fantasia = :nombre_fantasia,
                         giro = :giro,
                         direccion = :direccion,
                         comuna = :comuna,
                         regimen_tributario = :regimen_tributario,
+                        tasa_ppm = :tasa_ppm,
                         actualizado_en = NOW()
                     WHERE id = :id";
 
             $stmt = $this->pdo->prepare($sql);
             $stmt->execute([
                 ':razon_social'       => mb_substr($razonSocial, 0, 200),
-                ':giro'               => mb_substr($giro, 0, 200),
+                ':nombre_fantasia'    => $nombreFantasia,
+                ':giro'               => mb_substr($giro, 0, 255),
                 ':direccion'          => $direccion,
                 ':comuna'             => $comuna,
                 ':regimen_tributario' => $regimen,
+                ':tasa_ppm'           => $tasaPpm,
                 ':id'                 => $empresaId,
             ]);
 
@@ -234,6 +271,7 @@ class EmpresaService
                     'razon_social_anterior' => $empresaActual['razon_social'],
                     'razon_social_nueva'    => $razonSocial,
                     'regimen_tributario'    => $regimen,
+                    'tasa_ppm'              => $tasaPpm,
                     'usuario_id'            => $usuarioId,
                 ]
             );
@@ -245,12 +283,15 @@ class EmpresaService
             if ($transaccionPropia && $this->pdo->inTransaction()) {
                 $this->pdo->rollBack();
             }
+            if ($e instanceof InvalidArgumentException || $e instanceof RuntimeException) {
+                throw $e;
+            }
             throw new RuntimeException('Error al actualizar datos de la empresa: ' . $e->getMessage(), 0, $e);
         }
     }
 
     /**
-     * Activa o desactiva operativamente una empresa de la cartera del Contador.
+     * Activa o pausa operativamente una empresa de la cartera del Contador.
      *
      * @param int  $empresaId ID de la empresa
      * @param bool $activa    true para activar, false para pausar
@@ -318,7 +359,8 @@ class EmpresaService
         }
 
         $stmt = $this->pdo->prepare("
-            SELECT id, rut, razon_social, giro, direccion, comuna, regimen_tributario, activa, creado_en, actualizado_en
+            SELECT id, rut, razon_social, nombre_fantasia, giro, direccion, comuna,
+                    regimen_tributario, tasa_ppm, activa, creado_en, actualizado_en
             FROM empresas
             WHERE id = :id
             LIMIT 1
@@ -337,7 +379,8 @@ class EmpresaService
      */
     public function listarEmpresas(bool $soloActivas = true): array
     {
-        $sql = "SELECT id, rut, razon_social, giro, direccion, comuna, regimen_tributario, activa, creado_en
+        $sql = "SELECT id, rut, razon_social, nombre_fantasia, giro, direccion, comuna,
+                        regimen_tributario, tasa_ppm, activa, creado_en
                 FROM empresas";
 
         if ($soloActivas) {
@@ -348,6 +391,27 @@ class EmpresaService
 
         $stmt = $this->pdo->query($sql);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Valida y formatea la tasa PPM a 4 decimales BCMath (ej. 0.0025 = 0.25%).
+     *
+     * @param string $tasaRaw
+     * @return string
+     */
+    private function validarTasaPpm(string $tasaRaw): string
+    {
+        $tasa = trim($tasaRaw);
+        if (!is_numeric($tasa)) {
+            throw new InvalidArgumentException("La tasa PPM '{$tasaRaw}' debe ser un valor numérico.");
+        }
+
+        $tasaClean = bcadd($tasa, '0', 4);
+        if (bccomp($tasaClean, '0.0000', 4) < 0 || bccomp($tasaClean, '0.5000', 4) > 0) {
+            throw new InvalidArgumentException("La tasa PPM debe estar entre 0.0000 (0%) y 0.5000 (50%).");
+        }
+
+        return $tasaClean;
     }
 
     /**
