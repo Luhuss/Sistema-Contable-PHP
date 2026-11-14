@@ -2,8 +2,8 @@
 -- SISTEMA CONTABLE Y TRIBUTARIO WEB MODULAR (CHILE 2026 - NORMATIVA SII)
 -- Archivo: sql/esquema.sql
 -- Motor: MySQL 8.0+ (InnoDB) | Charset: utf8mb4_unicode_ci
--- Arquitectura: Multi-tenant (hasta 5 empresas), BCMath DECIMAL(15,4),
---               Inmutabilidad Contable Absoluta (ADR-002)
+-- Arquitectura: Multi-tenant (Plan base 1 Contador / 5 empresas),
+--               BCMath DECIMAL(15,4), Inmutabilidad Contable Absoluta (ADR-002)
 -- ============================================================================
 
 SET NAMES utf8mb4;
@@ -36,8 +36,8 @@ CREATE TABLE `empresas` (
     `razon_social` VARCHAR(200) NOT NULL,
     `nombre_fantasia` VARCHAR(150) DEFAULT NULL,
     `giro` VARCHAR(255) NOT NULL,
-    `direccion` VARCHAR(255) NOT NULL,
-    `comuna` VARCHAR(100) NOT NULL,
+    `direccion` VARCHAR(255) DEFAULT NULL,
+    `comuna` VARCHAR(100) DEFAULT NULL,
     `regimen_tributario` ENUM('PRO_PYME_GENERAL', 'PRO_PYME_TRANSPARENTE', 'GENERAL_14A', 'RENTA_PRESUNTA') NOT NULL DEFAULT 'PRO_PYME_GENERAL',
     `tasa_ppm` DECIMAL(6,4) NOT NULL DEFAULT 0.0025 COMMENT 'Tasa PPM vigente (ej. 0.0025 = 0.25%)',
     `activa` TINYINT(1) NOT NULL DEFAULT 1,
@@ -80,7 +80,8 @@ CREATE TABLE `usuario_empresa` (
 CREATE TABLE `plan_cuentas` (
     `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
     `empresa_id` INT UNSIGNED NOT NULL,
-    `codigo` VARCHAR(20) NOT NULL COMMENT 'Ej: 1.1.01.001',
+    `cuenta_padre_id` INT UNSIGNED DEFAULT NULL,
+    `codigo` VARCHAR(30) NOT NULL COMMENT 'Ej: 1.1.01.001',
     `nombre` VARCHAR(150) NOT NULL,
     `tipo` ENUM('ACTIVO', 'PASIVO', 'PATRIMONIO', 'INGRESO', 'GASTO', 'COSTO') NOT NULL,
     `naturaleza` ENUM('DEUDORA', 'ACREEDORA') NOT NULL,
@@ -89,10 +90,13 @@ CREATE TABLE `plan_cuentas` (
     `codigo_sii` VARCHAR(20) DEFAULT NULL COMMENT 'Homologación Diccionario SII / F22',
     `activa` TINYINT(1) NOT NULL DEFAULT 1,
     `creado_en` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `actualizado_en` DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_plan_empresa_codigo` (`empresa_id`, `codigo`),
     KEY `idx_plan_empresa_tipo` (`empresa_id`, `tipo`, `activa`),
-    CONSTRAINT `fk_plan_empresa` FOREIGN KEY (`empresa_id`) REFERENCES `empresas` (`id`) ON DELETE RESTRICT
+    KEY `idx_plan_padre` (`cuenta_padre_id`),
+    CONSTRAINT `fk_plan_empresa` FOREIGN KEY (`empresa_id`) REFERENCES `empresas` (`id`) ON DELETE RESTRICT,
+    CONSTRAINT `fk_plan_padre` FOREIGN KEY (`cuenta_padre_id`) REFERENCES `plan_cuentas` (`id`) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `periodos_fiscales` (
@@ -261,7 +265,7 @@ DELIMITER $$
 CREATE TRIGGER `trg_asientos_no_update`
 BEFORE UPDATE ON `asientos`
 FOR EACH ROW
-BEGIN  
+BEGIN
     SIGNAL SQLSTATE '45000'
         SET MESSAGE_TEXT = 'ADR-002 VIOLACION: Los asientos contables son inmutables. Emita un contraasiento.';
 END$$
@@ -329,8 +333,11 @@ BEGIN
         OR OLD.tipo_documento_sii <> NEW.tipo_documento_sii
         OR OLD.folio <> NEW.folio
         OR OLD.rut_contraparte <> NEW.rut_contraparte
+        OR OLD.monto_exento <> NEW.monto_exento
         OR OLD.monto_neto <> NEW.monto_neto
         OR OLD.monto_iva <> NEW.monto_iva
+        OR OLD.iva_no_recuperable <> NEW.iva_no_recuperable
+        OR OLD.monto_impuesto_adicional <> NEW.monto_impuesto_adicional
         OR OLD.monto_total <> NEW.monto_total
         OR (OLD.asiento_id IS NOT NULL AND OLD.asiento_id <> NEW.asiento_id)
         OR (OLD.estado = 'ANULADO') THEN
