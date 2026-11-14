@@ -1,3 +1,5 @@
+<?php
+
 class CalculadoraHonorariosService {
     
     // Tasa de Retención legal de Honorarios vigente para el año comercial 2026 (14,2500%)

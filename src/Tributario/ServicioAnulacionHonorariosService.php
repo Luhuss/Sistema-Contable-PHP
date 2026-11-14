@@ -1,3 +1,5 @@
+<?php
+
 // src/Tributario/ServicioAnulacionHonorariosService.php
 
 require_once __DIR__ . '/../Contabilidad/AsientoService.php';
