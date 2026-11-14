@@ -3,10 +3,10 @@
 declare(strict_types=1);
 
 /**
- * Configuración Global de la Aplicación y Estándares Tributarios (Chile 2026).
+ * Configuración Global de la Aplicación, Licenciamiento y Estándares Tributarios (Chile 2026).
  *
- * Define constantes de negocio, verificación de extensiones críticas (BCMath),
- * parámetros de sesión segura y funciones auxiliares matemáticas/seguridad.
+ * Define parámetros de licencia comercial (Plan Base: 1 Contador / hasta 5 empresas),
+ * constantes tributarias SII 2026, validación de BCMath y seguridad web.
  */
 
 // 1. Verificación Fail-Fast de extensiones obligatorias (ADR-001)
@@ -38,14 +38,22 @@ if (APP_ENV === 'development') {
     error_reporting(E_ALL & ~E_DEPRECATED & ~E_STRICT);
 }
 
-// 3. Constantes de Arquitectura y Normativa Tributaria Chile 2026
-define('MAX_EMPRESAS_TENANT', 5);
+// 3. Parámetros de Licenciamiento Comercial (Escalables según Plan Contratado)
+// Plan Base: 1 Contador titular + hasta 5 empresas clientes en cartera
+$maxEmpresasLicencia = (int)(getenv('LICENCIA_MAX_EMPRESAS') ?: 5);
+$maxUsuariosLicencia = (int)(getenv('LICENCIA_MAX_USUARIOS') ?: 1);
+
+define('LICENCIA_PLAN_NOMBRE', getenv('LICENCIA_PLAN_NOMBRE') ?: 'PLAN INDEPENDIENTE (5 EMPRESAS)');
+define('MAX_EMPRESAS_TENANT', max(1, $maxEmpresasLicencia));
+define('MAX_USUARIOS_TENANT', max(1, $maxUsuariosLicencia));
+
+// 4. Constantes de Arquitectura y Normativa Tributaria Chile 2026
 define('BCMATH_ESCALA_INTERNA', 4);
 define('TASA_RETENCION_BHE_2026', '0.1425');   // 14.25% Ley N° 21.133 (Año Comercial 2026)
 define('FACTOR_LIQUIDO_BHE_2026', '0.8575');   // 1 - 0.1425
 define('TASA_IVA_CHILE', '0.19');              // 19% IVA General
 
-// 4. Inicialización de Sesión Segura (Endurecida para Producción Web)
+// 5. Inicialización de Sesión Segura (Endurecida para Producción Web)
 if (session_status() === PHP_SESSION_NONE) {
     $esHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
         || (isset($_SERVER['SERVER_PORT']) && (int)$_SERVER['SERVER_PORT'] === 443);
@@ -63,7 +71,7 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// 5. Funciones Auxiliares Transversales (Matemática Financiera y Seguridad Web)
+// 6. Funciones Auxiliares Transversales (Matemática Financiera y Seguridad Web)
 
 if (!function_exists('bcround')) {
     /**
