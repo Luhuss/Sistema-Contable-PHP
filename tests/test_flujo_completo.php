@@ -41,7 +41,7 @@ require_once __DIR__ . '/../src/Tributario/LibroHonorariosService.php';
 require_once __DIR__ . '/../src/Tributario/ServicioAnulacionHonorariosService.php';
 require_once __DIR__ . '/../src/Reportes/ReportesServices.php';
 
-$rutaActivoFijo = __DIR__ . '/../src/ActivoFijo/ActivoFijoService.php';
+$rutaActivoFijo  = __DIR__ . '/../src/ActivoFijo/ActivoFijoService.php';
 $tieneActivoFijo = file_exists($rutaActivoFijo);
 if ($tieneActivoFijo) {
     require_once $rutaActivoFijo;
@@ -50,8 +50,8 @@ if ($tieneActivoFijo) {
 // -------------------------------------------------------------------------
 // Utilidades de Aserción y Generación de RUT Módulo 11
 // -------------------------------------------------------------------------
-$pruebasPasadas = 0;
-$pruebasFallidas = 0;
+$pruebasPasadas     = 0;
+$pruebasFallidas    = 0;
 $empresasCreadasIds = [];
 
 function afirmar(bool $condicion, string $descripcion): void
@@ -110,10 +110,10 @@ try {
     echo "1. Verificando infraestructura base (PDO + BCMath + Usuario)...\n";
     afirmar(extension_loaded('bcmath'), 'Extensión PHP BCMath habilitada para aritmética exacta CLP');
 
-    $stmtUser = $pdo->query("SELECT id FROM usuarios ORDER BY id ASC LIMIT 1");
+    $stmtUser  = $pdo->query("SELECT id FROM usuarios ORDER BY id ASC LIMIT 1");
     $usuarioId = (int)$stmtUser->fetchColumn();
     if ($usuarioId <= 0) {
-        $hash = password_hash('TestPass2026!', PASSWORD_BCRYPT);
+        $hash        = password_hash('TestPass2026!', PASSWORD_BCRYPT);
         $stmtInsUser = $pdo->prepare("
             INSERT INTO usuarios (nombre, email, password_hash, rol, activo)
             VALUES ('Contador QA', :email, :hash, 'ADMIN', 1)
@@ -127,7 +127,7 @@ try {
     // BLOQUE 2: Creación Multi-Tenant de Empresas y Plan de Cuentas Base SII
     // ---------------------------------------------------------------------
     echo "\n2. Probando alta multi-tenant de empresas y Plan de Cuentas SII...\n";
-    $semilla = random_int(76100000, 76899999);
+    $semilla     = random_int(76100000, 76899999);
     $rutEmpresaA = generarRutValido($semilla);
     $rutEmpresaB = generarRutValido($semilla + 1);
 
@@ -137,8 +137,8 @@ try {
         'giro'               => 'Desarrollo de Software y Consultoría TI',
         'direccion'          => 'Av. Apoquindo 4500',
         'comuna'             => 'Las Condes',
-        'regimen_tributario' => '14D_N3',
-        'tasa_ppm'           => '0.25',
+        'regimen_tributario' => 'PRO_PYME_GENERAL',
+        'tasa_ppm'           => '0.0025',
     ], $usuarioId);
     $empresasCreadasIds[] = $empresaAId;
 
@@ -148,8 +148,8 @@ try {
         'giro'               => 'Comercio al por mayor',
         'direccion'          => 'Av. Providencia 1200',
         'comuna'             => 'Providencia',
-        'regimen_tributario' => '14A',
-        'tasa_ppm'           => '1.00',
+        'regimen_tributario' => 'GENERAL_14A',
+        'tasa_ppm'           => '0.0100',
     ], $usuarioId);
     $empresasCreadasIds[] = $empresaBId;
 
@@ -171,42 +171,40 @@ try {
     }
     afirmar($periodoAId > 0, "Período fiscal abierto para Empresa A (ID #{$periodoAId})");
 
-    // Clasificar cuentas imputables generadas para Empresa A
-    $cuentasA = $planCuentasService->listarPlanCuentas($empresaAId, true);
+    // Crear estructura jerárquica de Plan de Cuentas SII en Empresa A
+    $grpActivoId     = $planCuentasService->crearCuenta($empresaAId, ['codigo' => '1', 'nombre' => 'ACTIVO', 'tipo' => 'ACTIVO', 'es_imputable' => 0], $usuarioId);
+    $grpPasivoId     = $planCuentasService->crearCuenta($empresaAId, ['codigo' => '2', 'nombre' => 'PASIVO', 'tipo' => 'PASIVO', 'es_imputable' => 0], $usuarioId);
+    $grpPatrimonioId = $planCuentasService->crearCuenta($empresaAId, ['codigo' => '3', 'nombre' => 'PATRIMONIO', 'tipo' => 'PATRIMONIO', 'es_imputable' => 0], $usuarioId);
+    $grpIngresoId    = $planCuentasService->crearCuenta($empresaAId, ['codigo' => '4', 'nombre' => 'INGRESOS', 'tipo' => 'INGRESO', 'es_imputable' => 0], $usuarioId);
+    $grpGastoId      = $planCuentasService->crearCuenta($empresaAId, ['codigo' => '5', 'nombre' => 'GASTOS', 'tipo' => 'GASTO', 'es_imputable' => 0], $usuarioId);
+
+    $ctaBancoId       = $planCuentasService->crearCuenta($empresaAId, ['codigo' => '1.1.01', 'nombre' => 'Banco Estado Cuenta Corriente', 'tipo' => 'ACTIVO', 'es_imputable' => 1, 'cuenta_padre_id' => $grpActivoId, 'codigo_sii' => '110100'], $usuarioId);
+    $ctaClientesId    = $planCuentasService->crearCuenta($empresaAId, ['codigo' => '1.1.02', 'nombre' => 'Clientes Nacionales', 'tipo' => 'ACTIVO', 'es_imputable' => 1, 'cuenta_padre_id' => $grpActivoId, 'codigo_sii' => '110300'], $usuarioId);
+    $ctaIvaCreditoId  = $planCuentasService->crearCuenta($empresaAId, ['codigo' => '1.1.03', 'nombre' => 'IVA Crédito Fiscal', 'tipo' => 'ACTIVO', 'es_imputable' => 1, 'cuenta_padre_id' => $grpActivoId, 'codigo_sii' => '110700'], $usuarioId);
+    $ctaActivoFijoId  = $planCuentasService->crearCuenta($empresaAId, ['codigo' => '1.2.01', 'nombre' => 'Equipos Computacionales', 'tipo' => 'ACTIVO', 'es_imputable' => 1, 'cuenta_padre_id' => $grpActivoId, 'codigo_sii' => '120300'], $usuarioId);
+
+    $ctaProveedoresId = $planCuentasService->crearCuenta($empresaAId, ['codigo' => '2.1.01', 'nombre' => 'Proveedores Nacionales', 'tipo' => 'PASIVO', 'es_imputable' => 1, 'cuenta_padre_id' => $grpPasivoId, 'codigo_sii' => '210200'], $usuarioId);
+    $ctaIvaDebitoId   = $planCuentasService->crearCuenta($empresaAId, ['codigo' => '2.1.02', 'nombre' => 'IVA Débito Fiscal', 'tipo' => 'PASIVO', 'es_imputable' => 1, 'cuenta_padre_id' => $grpPasivoId, 'codigo_sii' => '210700'], $usuarioId);
+    $ctaRetencionId   = $planCuentasService->crearCuenta($empresaAId, ['codigo' => '2.1.03', 'nombre' => 'Retención Honorarios 14,25%', 'tipo' => 'PASIVO', 'es_imputable' => 1, 'cuenta_padre_id' => $grpPasivoId, 'codigo_sii' => '210800'], $usuarioId);
+    $ctaDepAcumId     = $planCuentasService->crearCuenta($empresaAId, ['codigo' => '2.2.01', 'nombre' => 'Depreciación Acumulada Activo Fijo', 'tipo' => 'PASIVO', 'es_imputable' => 1, 'cuenta_padre_id' => $grpPasivoId, 'codigo_sii' => '120900'], $usuarioId);
+
+    $ctaCapitalId     = $planCuentasService->crearCuenta($empresaAId, ['codigo' => '3.1.01', 'nombre' => 'Capital Pagado', 'tipo' => 'PATRIMONIO', 'es_imputable' => 1, 'cuenta_padre_id' => $grpPatrimonioId, 'codigo_sii' => '310100'], $usuarioId);
+    $ctaIngresosId    = $planCuentasService->crearCuenta($empresaAId, ['codigo' => '4.1.01', 'nombre' => 'Ingresos por Servicios TI', 'tipo' => 'INGRESO', 'es_imputable' => 1, 'cuenta_padre_id' => $grpIngresoId, 'codigo_sii' => '410100'], $usuarioId);
+    $ctaGastosId      = $planCuentasService->crearCuenta($empresaAId, ['codigo' => '5.1.01', 'nombre' => 'Gastos Generales y Honorarios', 'tipo' => 'GASTO', 'es_imputable' => 1, 'cuenta_padre_id' => $grpGastoId, 'codigo_sii' => '510100'], $usuarioId);
+    $ctaGastoDepId    = $planCuentasService->crearCuenta($empresaAId, ['codigo' => '5.1.02', 'nombre' => 'Depreciación del Ejercicio', 'tipo' => 'GASTO', 'es_imputable' => 1, 'cuenta_padre_id' => $grpGastoId, 'codigo_sii' => '510400'], $usuarioId);
+
+    $cuentasA    = $planCuentasService->listarPlanCuentas($empresaAId, true);
     $imputablesA = array_values(array_filter($cuentasA, static fn(array $c): bool => (int)$c['es_imputable'] === 1));
-    afirmar(count($imputablesA) >= 5, 'Plan de Cuentas base SII generado automáticamente (' . count($imputablesA) . ' cuentas imputables)');
-
-    $porTipo = ['ACTIVO' => [], 'PASIVO' => [], 'PATRIMONIO' => [], 'INGRESO' => [], 'GASTO' => [], 'COSTO' => []];
-    foreach ($imputablesA as $cta) {
-        $t = strtoupper((string)$cta['tipo']);
-        if (isset($porTipo[$t])) {
-            $porTipo[$t][] = (int)$cta['id'];
-        }
-    }
-
-    $ctaBancoId       = $porTipo['ACTIVO'][0];
-    $ctaClientesId    = $porTipo['ACTIVO'][1] ?? $ctaBancoId;
-    $ctaIvaCreditoId  = $porTipo['ACTIVO'][2] ?? $ctaBancoId;
-    $ctaActivoFijoId  = $porTipo['ACTIVO'][3] ?? $ctaBancoId;
-
-    $ctaProveedoresId = $porTipo['PASIVO'][0];
-    $ctaIvaDebitoId   = $porTipo['PASIVO'][1] ?? $ctaProveedoresId;
-    $ctaRetencionId   = $porTipo['PASIVO'][2] ?? $ctaProveedoresId;
-    $ctaDepAcumId     = $porTipo['PASIVO'][3] ?? $ctaProveedoresId;
-
-    $ctaCapitalId     = $porTipo['PATRIMONIO'][0] ?? $ctaProveedoresId;
-    $ctaIngresosId    = $porTipo['INGRESO'][0];
-    $ctaGastosId      = $porTipo['GASTO'][0];
-    $ctaGastoDepId    = $porTipo['GASTO'][1] ?? $ctaGastosId;
+    afirmar(count($imputablesA) === 12, 'Plan de Cuentas jerárquico SII creado correctamente (' . count($imputablesA) . ' cuentas imputables)');
 
     // ---------------------------------------------------------------------
-    // BLOQUE 3: Partida Doble Estrictra en Libro Diario (AsientoService)
+    // BLOQUE 3: Partida Doble Estricta en Libro Diario (AsientoService)
     // ---------------------------------------------------------------------
     echo "\n3. Probando partida doble e integridad ACID en AsientoService...\n";
     $rechazoDescuadre = false;
     try {
         $asientoService->registrarAsiento($empresaAId, $periodoAId, $fechaHoy, 'Asiento descuadrado QA', [
-            ['cuenta_id' => $ctaBancoId,   'debe' => '100000.0000', 'haber' => '0.0000', 'glosa_linea' => null],
+            ['cuenta_id' => $ctaBancoId,   'debe' => '100000.0000', 'haber' => '0.0000',     'glosa_linea' => null],
             ['cuenta_id' => $ctaCapitalId, 'debe' => '0.0000',      'haber' => '99999.0000', 'glosa_linea' => null],
         ]);
     } catch (Throwable $e) {
@@ -308,7 +306,7 @@ try {
     if ($tieneActivoFijo && $pdo->query("SHOW TABLES LIKE 'activos_fijos'")->fetchColumn()) {
         echo "\n6. Probando Activo Fijo y centralización de depreciación mensual...\n";
         $afService = new ActivoFijoService($pdo, $asientoService, $auditoriaService);
-        $activoId = $afService->registrarActivo($empresaAId, [
+        $activoId  = $afService->registrarActivo($empresaAId, [
             'codigo_interno'          => 'AF-QA-01',
             'nombre'                  => 'Servidor Rack QA',
             'categoria'               => 'Equipos Computacionales',
