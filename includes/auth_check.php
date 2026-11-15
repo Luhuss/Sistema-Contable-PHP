@@ -107,6 +107,7 @@ if (empty($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 
+/** @var PDO $pdo */
 $pdo = Database::getConnection();
 $usuarioIdSesion = (int)$_SESSION['usuario_id'];
 
@@ -140,8 +141,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['accion_contexto'] ?? '') =
             FROM empresas e
             INNER JOIN usuario_empresa ue ON ue.empresa_id = e.id
             WHERE ue.usuario_id = :usuario_id
-              AND e.id = :empresa_id
-              AND e.activa = 1
+                AND e.id = :empresa_id
+                AND e.activa = 1
             LIMIT 1
         ");
         $stmtCheckEmp->execute([
@@ -164,7 +165,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['accion_contexto'] ?? '') =
             SELECT id
             FROM periodos_fiscales
             WHERE id = :periodo_id
-              AND empresa_id = :empresa_id
+                AND empresa_id = :empresa_id
             LIMIT 1
         ");
         $stmtCheckPer->execute([
@@ -188,7 +189,7 @@ $stmtEmpresas = $pdo->prepare("
     FROM empresas e
     INNER JOIN usuario_empresa ue ON ue.empresa_id = e.id
     WHERE ue.usuario_id = :usuario_id
-      AND e.activa = 1
+        AND e.activa = 1
     ORDER BY e.razon_social ASC
 ");
 $stmtEmpresas->execute([':usuario_id' => $usuarioIdSesion]);
@@ -205,6 +206,7 @@ $cupoLicencia = [
 ];
 
 // 5. Resolver empresa activa en sesión
+/** @var array<string, mixed>|null $empresaActiva */
 $empresaActiva = null;
 $empresaSesionId = (int)($_SESSION['empresa_activa_id'] ?? 0);
 
@@ -229,6 +231,7 @@ if ($empresaActiva === null && !in_array($scriptActual, ['empresas.php', 'logout
 
 // 6. Resolver períodos fiscales de la empresa activa
 $periodosEmpresa = [];
+/** @var array<string, mixed>|null $periodoActivo */
 $periodoActivo   = null;
 
 if ($empresaActiva !== null) {
