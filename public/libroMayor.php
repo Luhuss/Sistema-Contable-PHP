@@ -33,25 +33,53 @@ $cuentasImputables = array_values(array_filter(
 $cuentasMayor = [];
 
 if ($empresaId > 0 && $periodoId > 0) {
-    $rawMayor = $reportesService->obtenerLibroMayor($empresaId, $periodoId, $cuentaFiltroId);
-    $listaCuentas = isset($rawMayor['cuentas']) && is_array($rawMayor['cuentas'])
-        ? $rawMayor['cuentas']
-        : (is_array($rawMayor) ? $rawMayor : []);
+    /** @var int[] $cuentasAConsultar */
+    $cuentasAConsultar = [];
 
-    foreach ($listaCuentas as $item) {
-        if (!is_array($item)) {
+    if ($cuentaFiltroId !== null) {
+        $cuentasAConsultar = [$cuentaFiltroId];
+    } else {
+        $stmtCuentasMov = $pdo->prepare("
+            SELECT DISTINCT da.cuenta_id
+            FROM detalle_asientos da
+            INNER JOIN asientos a ON a.id = da.asiento_id
+            INNER JOIN plan_cuentas pc ON pc.id = da.cuenta_id
+            WHERE a.empresa_id = :empresa_id
+                AND a.periodo_id = :periodo_id
+            ORDER BY pc.codigo ASC
+        ");
+        $stmtCuentasMov->execute([
+            ':empresa_id' => $empresaId,
+            ':periodo_id' => $periodoId,
+        ]);
+
+        foreach ($stmtCuentasMov->fetchAll(PDO::FETCH_COLUMN) as $cid) {
+            $cuentasAConsultar[] = (int)$cid;
+        }
+    }
+
+    foreach ($cuentasAConsultar as $ctaId) {
+        $rawMayor = $reportesService->obtenerLibroMayor($empresaId, $ctaId, $periodoId);
+        if (!is_array($rawMayor) || empty($rawMayor)) {
             continue;
         }
 
-        $naturaleza   = strtoupper((string)($item['naturaleza'] ?? 'DEUDORA'));
-        $saldoInicial = bcadd((string)($item['saldo_anterior'] ?? $item['saldo_inicial'] ?? '0'), '0', 0);
+        $infoCuenta = isset($rawMayor['cuenta']) && is_array($rawMayor['cuenta'])
+            ? $rawMayor['cuenta']
+            : $rawMayor;
+
+        $naturaleza   = strtoupper((string)($infoCuenta['naturaleza'] ?? 'DEUDORA'));
+        $saldoInicial = bcadd((string)($rawMayor['saldo_anterior'] ?? $rawMayor['saldo_inicial'] ?? $infoCuenta['saldo_inicial'] ?? '0'), '0', 0);
         $saldoRunning = $saldoInicial;
         $sumaDebe     = '0';
         $sumaHaber    = '0';
         $movimientos  = [];
 
-        $rawMovs = is_array($item['movimientos'] ?? null) ? $item['movimientos'] : [];
+        $rawMovs = is_array($rawMayor['movimientos'] ?? null) ? $rawMayor['movimientos'] : [];
         foreach ($rawMovs as $mov) {
+            if (!is_array($mov)) {
+                continue;
+            }
             $debe  = bcadd((string)($mov['debe'] ?? '0'), '0', 0);
             $haber = bcadd((string)($mov['haber'] ?? '0'), '0', 0);
 
@@ -77,14 +105,14 @@ if ($empresaId > 0 && $periodoId > 0) {
         }
 
         $cuentasMayor[] = [
-            'codigo'        => (string)($item['codigo'] ?? ''),
-            'nombre'        => (string)($item['nombre'] ?? ''),
-            'tipo'          => (string)($item['tipo'] ?? ''),
+            'codigo'        => (string)($infoCuenta['codigo'] ?? ''),
+            'nombre'        => (string)($infoCuenta['nombre'] ?? ''),
+            'tipo'          => (string)($infoCuenta['tipo'] ?? ''),
             'naturaleza'    => $naturaleza,
             'saldo_inicial' => $saldoInicial,
-            'total_debe'    => isset($item['total_debe']) ? bcadd((string)$item['total_debe'], '0', 0) : $sumaDebe,
-            'total_haber'   => isset($item['total_haber']) ? bcadd((string)$item['total_haber'], '0', 0) : $sumaHaber,
-            'saldo_final'   => isset($item['saldo_final']) ? bcadd((string)$item['saldo_final'], '0', 0) : $saldoRunning,
+            'total_debe'    => isset($rawMayor['total_debe']) ? bcadd((string)$rawMayor['total_debe'], '0', 0) : $sumaDebe,
+            'total_haber'   => isset($rawMayor['total_haber']) ? bcadd((string)$rawMayor['total_haber'], '0', 0) : $sumaHaber,
+            'saldo_final'   => isset($rawMayor['saldo_final']) ? bcadd((string)$rawMayor['saldo_final'], '0', 0) : $saldoRunning,
             'movimientos'   => $movimientos,
         ];
     }
