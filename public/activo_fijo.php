@@ -105,8 +105,8 @@ $cuentasImputables = array_values(array_filter(
 $activos = $empresaId > 0 ? $activoFijoService->listarActivos($empresaId) : [];
 $resumen = $activoFijoService->obtenerResumen($activos);
 
-$regimenEmpresa    = (string)($empresaActiva['regimen_tributario'] ?? '14D_N3');
-$esProPyme         = str_starts_with($regimenEmpresa, '14D');
+$regimenEmpresa    = (string)($empresaActiva['regimen_tributario'] ?? 'PRO_PYME_GENERAL');
+$esProPyme         = str_starts_with($regimenEmpresa, 'PRO_PYME');
 $regimenPorDefecto = $esProPyme ? 'INSTANTANEA_14D' : 'NORMAL';
 
 $fechaPorDefecto = date('Y-m-d');
