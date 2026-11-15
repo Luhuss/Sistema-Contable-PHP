@@ -54,6 +54,9 @@ unset($_SESSION['flash_exito'], $_SESSION['flash_error']);
             <a href="libro_honorarios.php" class="nav-link <?= $paginaActual === 'libro_honorarios.php' ? 'activo' : '' ?>">
                 Honorarios (BHE 14,25%)
             </a>
+            <a href="activo_fijo.php" class="nav-link <?= $paginaActual === 'activo_fijo.php' ? 'activo' : '' ?>">
+                Activo Fijo (SII)
+            </a>
 
             <div class="nav-seccion">Estados Financieros</div>
             <a href="libroMayor.php" class="nav-link <?= $paginaActual === 'libroMayor.php' ? 'activo' : '' ?>">
